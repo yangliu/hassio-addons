@@ -17,6 +17,7 @@ logging.basicConfig(level=logging.INFO)
 # {"oa":1,"ia":2,"nm":"","on":0,"mode":1,"alarm":0,"tempSet":"20","tempIn":"23","fan":1,"idx":1,"grp":0,"OnoffLock":0,"tempLock":0,"highestVal":26,"lowestVal":26,"modeLock":0,"FlowDirection1":0,"FlowDirection2":0,"MainRmc":0},{"oa":1,"ia":3,"nm":"","on":0,"mode":1,"alarm":0,"tempSet":"25","tempIn":"23","fan":1,"idx":2,"grp":0,"OnoffLock":0,"tempLock":0,"highestVal":26,"lowestVal":26,"modeLock":0,"FlowDirection1":0,"FlowDirection2":0,"MainRmc":0},{"oa":1,"ia":4,"nm":"","on":0,"mode":8,"alarm":0,"tempSet":"26","tempIn":"23","fan":1,"idx":3,"grp":0,"OnoffLock":0,"tempLock":0,"highestVal":26,"lowestVal":26,"modeLock":0,"FlowDirection1":0,"FlowDirection2":0,"MainRmc":0},{"oa":1,"ia":5,"nm":"","on":1,"mode":8,"alarm":0,"tempSet":"27","tempIn":"37","fan":4,"idx":4,"grp":0,"OnoffLock":0,"tempLock":0,"highestVal":27,"lowestVal":27,"modeLock":0,"FlowDirection1":0,"FlowDirection2":0,"MainRmc":0}]}'
 
 acs = None
+ha_start = False
 CONFIG = {}
 STATES = {'on':{0:'OFF', 1:'ON','OFF':0,'ON':1},
     'mode':{0:'off',1:'cool',2:'dry',4:'fan_only',8:'heat','off':0,'cool':1,'dry':2,'fan_only':4,'heat':8},
@@ -62,27 +63,31 @@ def connect_mqtt() -> mqtt_client:
 def subscribe(client: mqtt_client):
     def on_message(client, userdata, msg):
         logging.info(f"Received `{msg.payload.decode()}` from `{msg.topic}` topic")
-        oi = msg.topic.split('/')[2].split('_')
+        if msg.topic == 'homeassistant/start':
+            global ha_start
+            ha_start = True
+        else:
+            oi = msg.topic.split('/')[2].split('_')
 
-        ac_temp = {}
-        oa = int(oi[1])
-        ia = int(oi[2])
-        global acs
-        for ac in acs:
-            if ac['oa'] == oa and ac['ia'] == ia:
-                ac_temp = copy.deepcopy(ac)
-                break
-        
-        if msg.topic.split('/')[-2] == 'temp':
-            ac_temp['tempSet'] = int(float(msg.payload.decode()))
-        else:
-            global STATES
-            ac_temp[msg.topic.split('/')[-2]] = STATES[msg.topic.split('/')[-2]][msg.payload.decode()]
-        if msg.topic.split('/')[-2] == 'mode' and msg.payload.decode() == 'off':
-            ac_temp['on'] = 0
-        else:
-            ac_temp['on'] = 1
-        set_ac(ac_temp)
+            ac_temp = {}
+            oa = int(oi[1])
+            ia = int(oi[2])
+            global acs
+            for ac in acs:
+                if ac['oa'] == oa and ac['ia'] == ia:
+                    ac_temp = copy.deepcopy(ac)
+                    break
+            
+            if msg.topic.split('/')[-2] == 'temp':
+                ac_temp['tempSet'] = int(float(msg.payload.decode()))
+            else:
+                global STATES
+                ac_temp[msg.topic.split('/')[-2]] = STATES[msg.topic.split('/')[-2]][msg.payload.decode()]
+            if msg.topic.split('/')[-2] == 'mode' and msg.payload.decode() == 'off':
+                ac_temp['on'] = 0
+            else:
+                ac_temp['on'] = 1
+            set_ac(ac_temp)
 
     client.on_message = on_message
 
@@ -137,10 +142,11 @@ def set_ac(ac):
             msg = ''
 
 def sync_acs(client):
-    global acs, STATES
+    global acs, STATES, ha_start
     acs_temp = get_acs()
 
-    if acs == None:   # setup ac_list if it is empty
+    if acs == None or ha_start:   # setup ac_list if it is empty
+        ha_start = False
         acs = copy.deepcopy(acs_temp)
         for ac in acs:
             # Subscribe
@@ -157,6 +163,7 @@ def sync_acs(client):
             client.publish("climate/zhonghong/ac_{0}_{1}/{2}/state".format(ac['oa'], ac['ia'], 'cur_temp'), ac['tempIn'])
             client.publish("climate/zhonghong/ac_{0}_{1}/{2}/state".format(ac['oa'], ac['ia'], 'fan'), STATES['fan'][ac['fan']])
             # Homeassistant MQTT Auto Discovery
+            client.subscribe("homeassistant/start")
             ha_config = {
                 "name": "Zhonghong HVAC {0}_{1}".format(ac['oa'], ac['ia']),
                 "unique_id": "zhonghong_vrf_{0}_{1}".format(ac['oa'], ac['ia']),
